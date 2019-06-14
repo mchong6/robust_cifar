@@ -12,7 +12,7 @@ import torchvision.transforms as transforms
 
 import os
 import math
-os.environ["CUDA_VISIBLE_DEVICES"]="5"
+os.environ["CUDA_VISIBLE_DEVICES"]="7"
 import argparse
 
 from models import *
@@ -25,6 +25,7 @@ from torch.utils.tensorboard import SummaryWriter
 parser = argparse.ArgumentParser(description='PyTorch CIFAR10 Training')
 parser.add_argument('--lr', default=0.1, type=float, help='learning rate')
 parser.add_argument('--k', default=10, type=int, help='learning rate')
+parser.add_argument('--lambda_grad', default=1, type=float, help='learning rate')
 parser.add_argument('--iter_eps', default=2/255, type=float, help='learning rate')
 parser.add_argument('--max_eps', default=8/255, type=float, help='learning rate')
 parser.add_argument('--mode', default='accumulate', help='learning rate')
@@ -111,7 +112,7 @@ def calc_grad(inputs, targets, classifier):
         
     grad = torch.autograd.grad(loss, [inputs], create_graph=True)[0]
     grad_loss = grad.norm(2)
-    return loss, 2*grad_loss, output
+    return loss, args.lambda_grad*grad_loss, output
 
 # Training
 def train(epoch):
@@ -129,7 +130,7 @@ def train(epoch):
 #         outputs = net(adv_im)
 #         loss = criterion(outputs, targets)
         optimizer.zero_grad()
-        loss.backward()
+        (loss+grad_loss).backward()
         optimizer.step()
         
         writer.add_scalar("loss", loss.item(), len(trainloader)*epoch+batch_idx)
@@ -176,7 +177,7 @@ def test(epoch):
         }
         if not os.path.isdir('checkpoint'):
             os.mkdir('checkpoint')
-        torch.save(state, './checkpoint/ckpt_madry+grad2.t7')
+        torch.save(state, './checkpoint/madry+grad_lambda%f.t7'%args.lambda_grad)
         best_acc = acc
 
 

@@ -16,6 +16,7 @@ import argparse
 
 from models import *
 from utils import progress_bar
+from advertorch.utils import NormalizeByChannelMeanStd
 
 
 parser = argparse.ArgumentParser(description='PyTorch CIFAR10 Training')
@@ -56,17 +57,18 @@ transform_train = transforms.Compose([
     transforms.RandomCrop(32, padding=4),
     transforms.RandomHorizontalFlip(),
     transforms.ToTensor(),
-    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+#     transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
 ])
 
 transform_test = transforms.Compose([
     transforms.ToTensor(),
-    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+#     transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
 ])
 
 
+dataset_type = "robust_data_robust_dataset"
 # trainset_norm = torchvision.datasets.CIFAR10(root='./data', train=True, download=True, transform=transform_train)
-trainset_robust = torchvision.datasets.ImageFolder(root='./robust_data_new', transform=transform_train)
+trainset_robust = torchvision.datasets.ImageFolder(root=dataset_type, transform=transform_train)
 # data_path = "madry/release_datasets/d_robust_CIFAR"
 # train_data = torch.cat(torch.load(os.path.join(data_path, f"CIFAR_ims")))
 # train_labels = torch.cat(torch.load(os.path.join(data_path, f"CIFAR_lab")))
@@ -83,23 +85,13 @@ testloader = torch.utils.data.DataLoader(testset, batch_size=100, shuffle=False,
 classes = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
 
 # Model
+MEAN = torch.Tensor([0.4914, 0.4822, 0.4465])
+STD = torch.Tensor([0.2023, 0.1994, 0.2010])
+norm = NormalizeByChannelMeanStd(mean=MEAN, std=STD)
+
 print('==> Building model..')
-# net = VGG('VGG19')
-net = ResNet18()
-# net = PreActResNet18()
-# net = GoogLeNet()
-# net = DenseNet121()
-# net = ResNeXt29_2x64d()
-# net = MobileNet()
-# net = MobileNetV2()
-# net = DPN92()
-# net = ShuffleNetG2()
-# net = SENet18()
-# net = ShuffleNetV2(1)
-net = net.to(device)
-if device == 'cuda':
-    net = torch.nn.DataParallel(net)
-    cudnn.benchmark = True
+net = torch.nn.DataParallel(nn.Sequential(norm, ResNet18()).cuda())
+cudnn.benchmark = True
 
 if args.resume or args.test:
     # Load checkpoint.
@@ -169,7 +161,7 @@ def test(epoch):
         }
         if not os.path.isdir('checkpoint'):
             os.mkdir('checkpoint')
-        torch.save(state, './checkpoint/ckpt_robust.t7')
+        torch.save(state, './checkpoint/ckpt_%s.t7'%dataset_type)
         best_acc = acc
 
 
