@@ -12,7 +12,6 @@ import torchvision.transforms as transforms
 
 import os
 import math
-os.environ["CUDA_VISIBLE_DEVICES"]="7"
 import argparse
 
 from models import *
@@ -27,13 +26,16 @@ parser.add_argument('--lr', default=0.1, type=float, help='learning rate')
 parser.add_argument('--k', default=10, type=int, help='learning rate')
 parser.add_argument('--lambda_grad', default=1, type=float, help='learning rate')
 parser.add_argument('--iter_eps', default=2/255, type=float, help='learning rate')
+parser.add_argument('--gpu', default=0, type=int, help='gpu')
 parser.add_argument('--max_eps', default=8/255, type=float, help='learning rate')
 parser.add_argument('--mode', default='accumulate', help='learning rate')
-parser.add_argument('--scale_lambda', '-s', action='store_true', help='learning rate')
 parser.add_argument('--resume', '-r', action='store_true', help='resume from checkpoint')
 parser.add_argument('--warm', '-w', action='store_true', help='resume from checkpoint')
 parser.add_argument('--test', '-t', action='store_true', help='resume from checkpoint')
+parser.add_argument('--adv', '-a', action='store_true', help='do adversarial training')
 args = parser.parse_args()
+
+os.environ["CUDA_VISIBLE_DEVICES"]=str(args.gpu)
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 best_acc = 0  # best test accuracy
@@ -78,7 +80,7 @@ if args.resume or args.test:
     print('==> Resuming from checkpoint..')
     assert os.path.isdir('checkpoint'), 'Error: no checkpoint directory found!'
 #     checkpoint = torch.load('./checkpoint/ckpt_%s_%d_scale%d_warm%d.t7'%(args.mode, args.k, args.scale_lambda, args.warm))
-    checkpoint = torch.load('./checkpoint/ckpt_madry+grad.t7')
+    checkpoint = torch.load('./checkpoint/ckpt_adv%d_lambda_%.3f.t7'%(args.adv, args.lambda_grad))
     net.load_state_dict(checkpoint['net'])
 #     best_acc = checkpoint['acc']
 #     start_epoch = checkpoint['epoch']
@@ -103,16 +105,33 @@ def cw(output, targets):
     loss = (real-other + 20).clamp(min=0.)
     return loss.sum()
 
+# def calc_grad(inputs, targets, classifier):
+#     inputs.requires_grad_()
+#     with torch.enable_grad():
+#         output = classifier(inputs)
+#         loss = criterion(output, targets)
+# #         cw_loss = cw(output, targets)
+        
+#     grad = torch.autograd.grad(loss, [inputs], create_graph=True)[0]
+#     grad_loss = grad.norm(2)
+#     return loss, args.lambda_grad*grad_loss, output
+
 def calc_grad(inputs, targets, classifier):
     inputs.requires_grad_()
-    with torch.enable_grad():
-        output = classifier(inputs)
-        loss = criterion(output, targets)
-#         cw_loss = cw(output, targets)
+    output = classifier(inputs)
+    loss = criterion(output, targets)
         
-    grad = torch.autograd.grad(loss, [inputs], create_graph=True)[0]
-    grad_loss = grad.norm(2)
-    return loss, args.lambda_grad*grad_loss, output
+    gradients = torch.autograd.grad(loss, [inputs], create_graph=True)[0]
+    
+    # Gradients have shape (batch_size, num_channels, img_width, img_height),
+    # so flatten to easily take norm per example in batch
+    gradients = gradients.view(inputs.size(0), -1)
+    
+    # Derivatives of the gradient close to 0 can cause problems because of
+    # the square root, so manually calculate norm and add epsilon
+    gradients_norm = torch.sqrt(torch.sum(gradients ** 2, dim=1) + 1e-12).mean()
+
+    return loss, args.lambda_grad*gradients_norm, output
 
 # Training
 def train(epoch):
@@ -125,10 +144,12 @@ def train(epoch):
     for batch_idx, (inputs, targets) in enumerate(trainloader):
         inputs, targets = inputs.to(device), targets.to(device)
         
-        adv_im = adversary.perturb(inputs, targets).detach()
-        loss, grad_loss, outputs = calc_grad(adv_im, targets, net)
-#         outputs = net(adv_im)
-#         loss = criterion(outputs, targets)
+        if args.adv:
+            train_im = adversary.perturb(inputs, targets).detach()
+        else:
+            train_im = inputs
+
+        loss, grad_loss, outputs = calc_grad(train_im, targets, net)
         optimizer.zero_grad()
         (loss+grad_loss).backward()
         optimizer.step()
@@ -177,7 +198,9 @@ def test(epoch):
         }
         if not os.path.isdir('checkpoint'):
             os.mkdir('checkpoint')
-        torch.save(state, './checkpoint/madry+grad_lambda%f.t7'%args.lambda_grad)
+#         torch.save(state, './checkpoint/madry+grad_lambda%f.t7'%args.lambda_grad)
+#         torch.save(state, './checkpoint/ckpt_grad_%.3f.t7'%args.lambda_grad)
+        torch.save(state, './checkpoint/ckpt_adv%d_lambda_%.3f.t7'%(args.adv, args.lambda_grad))
         best_acc = acc
 
 
