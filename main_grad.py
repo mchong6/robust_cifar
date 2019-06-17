@@ -11,7 +11,7 @@ import torchvision
 import torchvision.transforms as transforms
 
 import os
-os.environ["CUDA_VISIBLE_DEVICES"]="6"
+os.environ["CUDA_VISIBLE_DEVICES"]="1"
 import argparse
 
 from models import *
@@ -23,6 +23,7 @@ from advertorch.utils import NormalizeByChannelMeanStd
 parser = argparse.ArgumentParser(description='PyTorch CIFAR10 Training')
 parser.add_argument('--lr', default=0.1, type=float, help='learning rate')
 parser.add_argument('--resume', '-r', action='store_true', help='resume from checkpoint')
+parser.add_argument('--lambda_grad', default=1e2, type=float, help='learning rate')
 args = parser.parse_args()
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -35,12 +36,12 @@ transform_train = transforms.Compose([
     transforms.RandomCrop(32, padding=4),
     transforms.RandomHorizontalFlip(),
     transforms.ToTensor(),
-    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+    #transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
 ])
 
 transform_test = transforms.Compose([
     transforms.ToTensor(),
-    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+    #transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
 ])
 
 
@@ -52,43 +53,22 @@ testloader = torch.utils.data.DataLoader(testset, batch_size=100, shuffle=False,
 
 classes = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
 
-# Model
+MEAN = torch.Tensor([0.4914, 0.4822, 0.4465])
+STD = torch.Tensor([0.2023, 0.1994, 0.2010])
+norm = NormalizeByChannelMeanStd(mean=MEAN, std=STD)
+
 print('==> Building model..')
-# net = VGG('VGG19')
-net = ResNet18()
-# net = PreActResNet18()
-# net = GoogLeNet()
-# net = DenseNet121()
-# net = ResNeXt29_2x64d()
-# net = MobileNet()
-# net = MobileNetV2()
-# net = DPN92()
-# net = ShuffleNetG2()
-# net = SENet18()
-# net = ShuffleNetV2(1)
-net = net.to(device)
-
-
-if device == 'cuda':
-    net = torch.nn.DataParallel(net)
-    cudnn.benchmark = True
+net = torch.nn.DataParallel(nn.Sequential(norm, ResNet18()).cuda())
+cudnn.benchmark = True
 
 if args.resume:
     # Load checkpoint.
     print('==> Resuming from checkpoint..')
     assert os.path.isdir('checkpoint'), 'Error: no checkpoint directory found!'
-    checkpoint = torch.load('./checkpoint/ckpt.t7')
+    checkpoint = torch.load('./checkpoint/ckpt_grad_1.000.t7')
     net.load_state_dict(checkpoint['net'])
-#     best_acc = checkpoint['acc']
-#     start_epoch = checkpoint['epoch']
-
-MEAN = torch.Tensor([0.4914, 0.4822, 0.4465])
-STD = torch.Tensor([0.2023, 0.1994, 0.2010])
-
-norm = NormalizeByChannelMeanStd(
-    mean=MEAN, std=STD)
-
-# net = nn.Sequential(norm, net).cuda()
+    best_acc = checkpoint['acc']
+    start_epoch = checkpoint['epoch']
 
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.SGD(net.parameters(), lr=args.lr, momentum=0.9, weight_decay=5e-4)
@@ -115,13 +95,12 @@ def calc_grad(inputs, targets, classifier):
     with torch.enable_grad():
         output = classifier(inputs)
         loss = criterion(output, targets)
-        cw_loss = cw(output, targets)
+        #cw_loss = cw(output, targets)
         
-    grad = torch.autograd.grad(cw_loss, [inputs], create_graph=True)[0]
-#     grad_loss = grad.norm(1)
+    grad = torch.autograd.grad(loss, [inputs], create_graph=True)[0]
     grad_loss = grad.norm(2)
 #     return loss, (-5e-1*grad_loss).clamp(min=-1), output
-    return loss, 5e-1*grad_loss, output
+    return loss, args.lambda_grad*grad_loss, output
 #     return loss, 7e2*grad_loss, output
 #     grad_loss = grad_loss / grad_loss.detach() * loss.detach() / 10
 #     print(loss, grad_loss
@@ -143,18 +122,6 @@ def calc_grad(inputs, targets, classifier):
 #     grad_loss = (mask * grad_loss).mean()
 #     return loss, 5e3*grad_loss, output
 
-def mixup_data(x, y, alpha=0.5):
-    '''Returns mixed inputs, pairs of targets, and lambda'''
-    batch_size = x.size()[0]
-    index = torch.randperm(batch_size).cuda()
-    
-    y_onehot = torch.FloatTensor(x.size(0), 10).cuda()
-    y_onehot.zero_()
-    y_onehot.scatter_(1, y.unsqueeze(1), 1)
-
-    mixed_x = (1-alpha) * x + (alpha) * x[index, :]
-    mixed_y = (1-alpha) * y_onehot + alpha * y_onehot[index]
-    return mixed_x, mixed_y
 
 # Training
 def train(epoch):
@@ -166,7 +133,7 @@ def train(epoch):
     total = 0
     for batch_idx, (inputs, targets) in enumerate(trainloader):
         inputs, targets = inputs.to(device), targets.to(device)
-        inputs += torch.zeros_like(inputs).uniform_(-0.08, 0.08)
+        #inputs += torch.zeros_like(inputs).uniform_(-0.08, 0.08)
 #         inputs, targets = mixup_data(inputs, targets)
         optimizer.zero_grad()
         if epoch > -1:
@@ -218,7 +185,7 @@ def test(epoch):
     }
     if not os.path.isdir('checkpoint'):
         os.mkdir('checkpoint')
-    torch.save(state, './checkpoint/ckpt_grad_cw.t7')
+    torch.save(state, './checkpoint/ckpt_grad_%.3f.t7'%args.lambda_grad)
     best_acc = acc
 
 

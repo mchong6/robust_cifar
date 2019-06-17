@@ -11,7 +11,7 @@ import torchvision
 import torchvision.transforms as transforms
 
 import os
-os.environ["CUDA_VISIBLE_DEVICES"]="6"
+os.environ["CUDA_VISIBLE_DEVICES"]="0"
 import argparse
 
 from models import *
@@ -66,9 +66,9 @@ transform_test = transforms.Compose([
 ])
 
 
-dataset_type = "robust_data_robust_dataset"
+dataset_type = "robust_data_madry"
 # trainset_norm = torchvision.datasets.CIFAR10(root='./data', train=True, download=True, transform=transform_train)
-trainset_robust = torchvision.datasets.ImageFolder(root=dataset_type, transform=transform_train)
+trainset_robust = torchvision.datasets.ImageFolder(root='./dataset_folder/%s'%dataset_type, transform=transform_train)
 # data_path = "madry/release_datasets/d_robust_CIFAR"
 # train_data = torch.cat(torch.load(os.path.join(data_path, f"CIFAR_ims")))
 # train_labels = torch.cat(torch.load(os.path.join(data_path, f"CIFAR_lab")))
