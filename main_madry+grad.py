@@ -26,6 +26,7 @@ parser = argparse.ArgumentParser(description='PyTorch CIFAR10 Training')
 parser.add_argument('--lr', default=0.1, type=float, help='learning rate')
 parser.add_argument('--k', default=10, type=int, help='learning rate')
 parser.add_argument('--lambda_grad', default=1, type=float, help='learning rate')
+parser.add_argument('--model', default='batch', help='learning rate')
 parser.add_argument('--iter_eps', default=2/255, type=float, help='learning rate')
 parser.add_argument('--gpu', default=0, type=int, help='gpu')
 parser.add_argument('--max_eps', default=8/255, type=float, help='learning rate')
@@ -74,14 +75,18 @@ STD = torch.Tensor([0.2023, 0.1994, 0.2010])
 norm = NormalizeByChannelMeanStd(mean=MEAN, std=STD)
 
 print('==> Building model..')
-net = torch.nn.DataParallel(nn.Sequential(norm, ResNet18_bn()).cuda())
+if args.model =='batch':
+    net = torch.nn.DataParallel(nn.Sequential(norm, ResNet18()).cuda())
+else:
+    net = torch.nn.DataParallel(nn.Sequential(norm, ResNet18_bn()).cuda())
+
 cudnn.benchmark = True
 
 if args.resume or args.test:
     # Load checkpoint.
     print('==> Resuming from checkpoint..')
     assert os.path.isdir('checkpoint'), 'Error: no checkpoint directory found!'
-    checkpoint = torch.load('./checkpoint/ckpt_adv%d_grad%d_lambda_%.1f.t7'%(args.adv, args.grad, args.lambda_grad))
+    checkpoint = torch.load('./checkpoint/%s_%d_grad%d_lambda_%.1f.t7'%(args.model, args.adv, args.grad, args.lambda_grad))
     net.load_state_dict(checkpoint['net'])
 #     best_acc = checkpoint['acc']
 #     start_epoch = checkpoint['epoch']
@@ -210,7 +215,7 @@ def test(epoch):
             os.mkdir('checkpoint')
 #         torch.save(state, './checkpoint/madry+grad_lambda%f.t7'%args.lambda_grad)
 #         torch.save(state, './checkpoint/ckpt_grad_%.3f.t7'%args.lambda_grad)
-        torch.save(state, './checkpoint/gn_ckpt_adv%d_grad%d_lambda_%.1f.t7'%(args.adv, args.grad, args.lambda_grad))
+        torch.save(state, './checkpoint/%s_%d_grad%d_lambda_%.1f.t7'%(args.model, args.adv, args.grad, args.lambda_grad))
         best_acc = acc
 
 
