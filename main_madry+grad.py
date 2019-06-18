@@ -18,6 +18,7 @@ from models import *
 from utils import progress_bar
 from advertorch.attacks import LinfPGDAttack
 from advertorch.utils import NormalizeByChannelMeanStd
+from advertorch.context import ctx_noparamgrad_and_eval
 from torch.utils.tensorboard import SummaryWriter
 
 
@@ -33,6 +34,7 @@ parser.add_argument('--resume', '-r', action='store_true', help='resume from che
 parser.add_argument('--warm', '-w', action='store_true', help='resume from checkpoint')
 parser.add_argument('--test', '-t', action='store_true', help='resume from checkpoint')
 parser.add_argument('--adv', '-a', action='store_true', help='do adversarial training')
+parser.add_argument('--grad', '-g', action='store_true', help='do adversarial training')
 args = parser.parse_args()
 
 os.environ["CUDA_VISIBLE_DEVICES"]=str(args.gpu)
@@ -72,22 +74,22 @@ STD = torch.Tensor([0.2023, 0.1994, 0.2010])
 norm = NormalizeByChannelMeanStd(mean=MEAN, std=STD)
 
 print('==> Building model..')
-net = torch.nn.DataParallel(nn.Sequential(norm, ResNet18()).cuda())
+net = torch.nn.DataParallel(nn.Sequential(norm, ResNet18_bn()).cuda())
 cudnn.benchmark = True
 
 if args.resume or args.test:
     # Load checkpoint.
     print('==> Resuming from checkpoint..')
     assert os.path.isdir('checkpoint'), 'Error: no checkpoint directory found!'
-#     checkpoint = torch.load('./checkpoint/ckpt_%s_%d_scale%d_warm%d.t7'%(args.mode, args.k, args.scale_lambda, args.warm))
-    checkpoint = torch.load('./checkpoint/ckpt_adv%d_lambda_%.3f.t7'%(args.adv, args.lambda_grad))
+    checkpoint = torch.load('./checkpoint/ckpt_adv%d_grad%d_lambda_%.1f.t7'%(args.adv, args.grad, args.lambda_grad))
     net.load_state_dict(checkpoint['net'])
 #     best_acc = checkpoint['acc']
 #     start_epoch = checkpoint['epoch']
 
 
 criterion = nn.CrossEntropyLoss()
-optimizer = optim.SGD(net.parameters(), lr=args.lr, momentum=0.9, weight_decay=5e-4)
+# optimizer = optim.SGD(net.parameters(), lr=args.lr, momentum=0.9, weight_decay=5e-4)
+optimizer = optim.Adam(net.parameters(), lr=0.01)
 
 adversary = LinfPGDAttack(
     net, eps=8/255, eps_iter=2/255, nb_iter=7,
@@ -121,15 +123,21 @@ def calc_grad(inputs, targets, classifier):
     output = classifier(inputs)
     loss = criterion(output, targets)
         
-    gradients = torch.autograd.grad(loss, [inputs], create_graph=True)[0]
-    
-    # Gradients have shape (batch_size, num_channels, img_width, img_height),
-    # so flatten to easily take norm per example in batch
-    gradients = gradients.view(inputs.size(0), -1)
-    
-    # Derivatives of the gradient close to 0 can cause problems because of
-    # the square root, so manually calculate norm and add epsilon
-    gradients_norm = torch.sqrt(torch.sum(gradients ** 2, dim=1) + 1e-12).mean()
+    if args.grad:
+#         gradients = torch.autograd.grad(loss, [inputs], create_graph=True)[0]
+        gradients = torch.autograd.grad(outputs=loss, inputs=inputs,
+                      grad_outputs=torch.ones(loss.size()).cuda(),
+                      create_graph=True, retain_graph=True)[0]
+
+        # Gradients have shape (batch_size, num_channels, img_width, img_height),
+        # so flatten to easily take norm per example in batch
+        gradients = gradients.view(inputs.size(0), -1)
+
+        # Derivatives of the gradient close to 0 can cause problems because of
+        # the square root, so manually calculate norm and add epsilon
+        gradients_norm = torch.sqrt(torch.sum(gradients ** 2, dim=1) + 1e-12).mean()
+    else:
+        gradients_norm = torch.zeros_like(loss).cuda()
 
     return loss, args.lambda_grad*gradients_norm, output
 
@@ -143,9 +151,11 @@ def train(epoch):
     total = 0
     for batch_idx, (inputs, targets) in enumerate(trainloader):
         inputs, targets = inputs.to(device), targets.to(device)
+        inputs += torch.zeros_like(inputs).uniform_(-8/255, 8/255)
         
         if args.adv:
-            train_im = adversary.perturb(inputs, targets).detach()
+            with ctx_noparamgrad_and_eval(net):
+                train_im = adversary.perturb(inputs, targets).detach()
         else:
             train_im = inputs
 
@@ -200,7 +210,7 @@ def test(epoch):
             os.mkdir('checkpoint')
 #         torch.save(state, './checkpoint/madry+grad_lambda%f.t7'%args.lambda_grad)
 #         torch.save(state, './checkpoint/ckpt_grad_%.3f.t7'%args.lambda_grad)
-        torch.save(state, './checkpoint/ckpt_adv%d_lambda_%.3f.t7'%(args.adv, args.lambda_grad))
+        torch.save(state, './checkpoint/gn_ckpt_adv%d_grad%d_lambda_%.1f.t7'%(args.adv, args.grad, args.lambda_grad))
         best_acc = acc
 
 
