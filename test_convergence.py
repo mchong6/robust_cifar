@@ -1,3 +1,11 @@
+def warn(*args, **kwargs):
+    pass
+get_ipython().run_line_magic('load_ext', 'autoreload')
+get_ipython().run_line_magic('autoreload', '2')
+import warnings
+warnings.warn = warn
+
+import argparse
 import os
 from glob import glob
 os.environ["CUDA_VISIBLE_DEVICES"]="0"
@@ -15,7 +23,6 @@ import torch.utils.data as Data
 import torchvision.transforms as transforms
 
 from models import *
-
 import matplotlib.pyplot as plt
 cudnn.benchmark = True
 
@@ -63,26 +70,21 @@ classifier = torch.nn.DataParallel(nn.Sequential(norm, ResNet18())).cuda().eval(
 # checkpoint = torch.load('./checkpoint/madry+grad_lambda0.100000.t7')
 # checkpoint = torch.load('./checkpoint/madry+grad_lambda10.000000.t7')
 # checkpoint = torch.load('./checkpoint/ckpt_robust_data_robust_mod.t7')
-#checkpoint = torch.load('./checkpoint/ckpt_adv0_lambda_300.000.t7')
-#checkpoint = torch.load('./checkpoint/ckpt_adv0_grad1_cw1_lambda_1.0.t7')
-#checkpoint = torch.load('./checkpoint/ckpt_adv1_grad1_cw0_lambda_1.0.t7')
-#checkpoint = torch.load('./checkpoint/ckpt_adv0_grad1_cw0_lambda_200.0.t7')
-checkpoint = torch.load('./checkpoint/ckpt_adv1_grad0_cw0_lambda_1.0.t7')
+checkpoint = torch.load('./checkpoint/ckpt_adv1_lambda_100.000.t7')
+# checkpoint = torch.load('./checkpoint/ckpt_adv0_lambda_50.000.t7')
+# checkpoint = torch.load('./checkpoint/ckpt_accumulate_10_scale1_warm1.t7')
 classifier.load_state_dict(checkpoint['net'])
+# classifier = nn.Sequential(norm, classifier).cuda().eval()
 
 classifier_norm = nn.Sequential(norm, ResNet18()).cuda().eval()
+# checkpoint = torch.load('./checkpoint/ckpt_accumulate_10_scale1_warm1.t7')
+# checkpoint = torch.load('./checkpoint/ckpt_robust.t7')
+# checkpoint = torch.load('./checkpoint/ckpt_sub_accumulate_1_scale0_warm0.t7')
+# checkpoint = torch.load('./checkpoint/ckpt_madry.t7')
+# checkpoint2 = torch.load('./checkpoint/ckpt.t7')
+# classifier_norm.load_state_dict(checkpoint2['net'])
 criterion = nn.CrossEntropyLoss()
 
-
-from advertorch.attacks import L2PGDAttack
-
-max_eps = 0.25
-adversary = L2PGDAttack(
-    classifier, loss_fn=nn.CrossEntropyLoss(reduction="sum"), eps=max_eps,
-    nb_iter=20, eps_iter=max_eps/5, rand_init=True, clip_min=0.0, clip_max=1.0,
-    targeted=False)
-
-# adv_untargeted = adversary.perturb(cln_data, true_label)
 
 real_correct = 0
 fake_correct = 0
@@ -108,4 +110,3 @@ for itr, (real_im, target) in enumerate((testloader)):
 
 print(fake_correct/total)
 print(real_correct/total)
-

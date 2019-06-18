@@ -10,6 +10,27 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+class GroupNorm(nn.Module):
+    def __init__(self, num_groups, num_features,eps=1e-5):
+        super(GroupNorm, self).__init__()
+        self.weight = nn.Parameter(torch.ones(1,num_features,1,1))
+        self.bias = nn.Parameter(torch.zeros(1,num_features,1,1))
+        self.num_groups = num_groups
+        self.eps = eps
+
+    def forward(self, x):
+        N,C,H,W = x.size()
+        G = self.num_groups
+        assert C % G == 0
+
+        x = x.view(N,G,-1)
+        mean = x.mean(-1, keepdim=True)
+        var = x.var(-1, keepdim=True)
+
+        x = (x-mean) / (var+self.eps).sqrt()
+        x = x.view(N,C,H,W)
+        return x * self.weight + self.bias
+
 
 class BasicBlock(nn.Module):
     expansion = 1
@@ -17,15 +38,15 @@ class BasicBlock(nn.Module):
     def __init__(self, in_planes, planes, stride=1):
         super(BasicBlock, self).__init__()
         self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(planes)
+        self.bn1 = GroupNorm(32, planes)
         self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(planes)
+        self.bn2 = GroupNorm(32, planes)
 
         self.shortcut = nn.Sequential()
         if stride != 1 or in_planes != self.expansion*planes:
             self.shortcut = nn.Sequential(
                 nn.Conv2d(in_planes, self.expansion*planes, kernel_size=1, stride=stride, bias=False),
-                nn.BatchNorm2d(self.expansion*planes)
+                GroupNorm(32, self.expansion*planes)
             )
 
     def forward(self, x):
@@ -42,17 +63,17 @@ class Bottleneck(nn.Module):
     def __init__(self, in_planes, planes, stride=1):
         super(Bottleneck, self).__init__()
         self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(planes)
+        self.bn1 = GroupNorm(32, planes)
         self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(planes)
+        self.bn2 = GroupNorm(32, planes)
         self.conv3 = nn.Conv2d(planes, self.expansion*planes, kernel_size=1, bias=False)
-        self.bn3 = nn.BatchNorm2d(self.expansion*planes)
+        self.bn3 = GroupNorm(32, self.expansion*planes)
 
         self.shortcut = nn.Sequential()
         if stride != 1 or in_planes != self.expansion*planes:
             self.shortcut = nn.Sequential(
                 nn.Conv2d(in_planes, self.expansion*planes, kernel_size=1, stride=stride, bias=False),
-                nn.BatchNorm2d(self.expansion*planes)
+                GroupNorm(32, self.expansion*planes)
             )
 
     def forward(self, x):
@@ -70,7 +91,7 @@ class ResNet(nn.Module):
         self.in_planes = 64
 
         self.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(64)
+        self.bn1 = GroupNorm(32, 64)
         self.layer1 = self._make_layer(block, 64, num_blocks[0], stride=1)
         self.layer2 = self._make_layer(block, 128, num_blocks[1], stride=2)
         self.layer3 = self._make_layer(block, 256, num_blocks[2], stride=2)
