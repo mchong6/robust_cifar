@@ -19,7 +19,7 @@ from utils import progress_bar
 from advertorch.attacks import LinfPGDAttack
 from advertorch.utils import NormalizeByChannelMeanStd
 from advertorch.context import ctx_noparamgrad_and_eval
-from torch.utils.tensorboard import SummaryWriter
+# from torch.utils.tensorboard import SummaryWriter
 
 
 parser = argparse.ArgumentParser(description='PyTorch CIFAR10 Training')
@@ -30,15 +30,15 @@ parser.add_argument('--model', default='batch', help='learning rate')
 parser.add_argument('--iter_eps', default=2/255, type=float, help='learning rate')
 parser.add_argument('--gpu', default=0, type=int, help='gpu')
 parser.add_argument('--max_eps', default=8/255, type=float, help='learning rate')
-parser.add_argument('--mode', default='accumulate', help='learning rate')
 parser.add_argument('--resume', '-r', action='store_true', help='resume from checkpoint')
 parser.add_argument('--warm', '-w', action='store_true', help='resume from checkpoint')
 parser.add_argument('--test', '-t', action='store_true', help='resume from checkpoint')
 parser.add_argument('--adv', '-a', action='store_true', help='do adversarial training')
 parser.add_argument('--grad', '-g', action='store_true', help='do adversarial training')
 args = parser.parse_args()
+print(args)
 
-os.environ["CUDA_VISIBLE_DEVICES"]=str(args.gpu)
+# os.environ["CUDA_VISIBLE_DEVICES"]=str(args.gpu)
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 best_acc = 0  # best test accuracy
@@ -50,12 +50,10 @@ transform_train = transforms.Compose([
     transforms.RandomCrop(32, padding=4),
     transforms.RandomHorizontalFlip(),
     transforms.ToTensor(),
-#     transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
 ])
 
 transform_test = transforms.Compose([
     transforms.ToTensor(),
-#     transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
 ])
 
 trainset = torchvision.datasets.CIFAR10(root='./data', train=True, download=True, transform=transform_train)
@@ -67,7 +65,7 @@ testloader = torch.utils.data.DataLoader(testset, batch_size=100, shuffle=False,
 classes = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
 
 os.makedirs('logs', exist_ok=True)
-writer = SummaryWriter("logs/test2")
+# writer = SummaryWriter("logs/test2")
 
 # Model
 MEAN = torch.Tensor([0.4914, 0.4822, 0.4465])
@@ -87,9 +85,10 @@ if args.resume or args.test:
     print('==> Resuming from checkpoint..')
     assert os.path.isdir('checkpoint'), 'Error: no checkpoint directory found!'
     checkpoint = torch.load('./checkpoint/%s_%d_grad%d_lambda_%.1f.t7'%(args.model, args.adv, args.grad, args.lambda_grad))
+#     checkpoint = torch.load('./checkpoint/gn_ckpt_adv0_grad1_lambda_100.0.t7')
     net.load_state_dict(checkpoint['net'])
 #     best_acc = checkpoint['acc']
-#     start_epoch = checkpoint['epoch']
+    start_epoch = checkpoint['epoch']
 
 
 criterion = nn.CrossEntropyLoss()
@@ -156,11 +155,11 @@ def train(epoch):
     total = 0
     for batch_idx, (inputs, targets) in enumerate(trainloader):
         inputs, targets = inputs.to(device), targets.to(device)
-        inputs += torch.zeros_like(inputs).uniform_(-8/255, 8/255)
+#         inputs += torch.zeros_like(inputs).uniform_(-8/255, 8/255)
         
         if args.adv:
-            with ctx_noparamgrad_and_eval(net):
-                train_im = adversary.perturb(inputs, targets).detach()
+#             with ctx_noparamgrad_and_eval(net):
+            train_im = adversary.perturb(inputs, targets).detach()
         else:
             train_im = inputs
 
@@ -169,8 +168,8 @@ def train(epoch):
         (loss+grad_loss).backward()
         optimizer.step()
         
-        writer.add_scalar("loss", loss.item(), len(trainloader)*epoch+batch_idx)
-        writer.add_scalar("grad loss", grad_loss.item(), len(trainloader)*epoch+batch_idx)
+#         writer.add_scalar("loss", loss.item(), len(trainloader)*epoch+batch_idx)
+#         writer.add_scalar("grad loss", grad_loss.item(), len(trainloader)*epoch+batch_idx)
 
         train_loss += loss.item()
         grad_loss += grad_loss.item()
@@ -215,7 +214,7 @@ def test(epoch):
             os.mkdir('checkpoint')
 #         torch.save(state, './checkpoint/madry+grad_lambda%f.t7'%args.lambda_grad)
 #         torch.save(state, './checkpoint/ckpt_grad_%.3f.t7'%args.lambda_grad)
-        torch.save(state, './checkpoint/%s_%d_grad%d_lambda_%.1f.t7'%(args.model, args.adv, args.grad, args.lambda_grad))
+        torch.save(state, './checkpoint/%s_adv%d_grad%d_lambda_%.1f.t7'%(args.model, args.adv, args.grad, args.lambda_grad))
         best_acc = acc
 
 
@@ -224,9 +223,9 @@ if args.test:
 else:
     max_epoch = 200
     for epoch in range(start_epoch, max_epoch):
-       if epoch == int(max_epoch/2):
+       if epoch in (100, 150):
            for g in optimizer.param_groups:
-               g["lr"] = args.lr /10
+               g["lr"]/=10
        train(epoch)
        test(epoch)
-    writer.close()
+#     writer.close()
