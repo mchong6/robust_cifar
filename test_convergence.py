@@ -1,14 +1,6 @@
-def warn(*args, **kwargs):
-    pass
-get_ipython().run_line_magic('load_ext', 'autoreload')
-get_ipython().run_line_magic('autoreload', '2')
-import warnings
-warnings.warn = warn
-
 import argparse
 import os
 from glob import glob
-os.environ["CUDA_VISIBLE_DEVICES"]="0"
 
 import numpy as np
 import torch
@@ -70,9 +62,9 @@ classifier = torch.nn.DataParallel(nn.Sequential(norm, ResNet18())).cuda().eval(
 # checkpoint = torch.load('./checkpoint/madry+grad_lambda0.100000.t7')
 # checkpoint = torch.load('./checkpoint/madry+grad_lambda10.000000.t7')
 # checkpoint = torch.load('./checkpoint/ckpt_robust_data_robust_mod.t7')
-checkpoint = torch.load('./checkpoint/ckpt_adv1_lambda_100.000.t7')
-# checkpoint = torch.load('./checkpoint/ckpt_adv0_lambda_50.000.t7')
-# checkpoint = torch.load('./checkpoint/ckpt_accumulate_10_scale1_warm1.t7')
+#checkpoint = torch.load('./checkpoint/ckpt_adv1_lambda_100.000.t7')
+checkpoint = torch.load('./checkpoint/ckpt_adv0_grad1_cw0_lambda_200.0.t7')
+#checkpoint = torch.load('./checkpoint/ckpt_adv1_grad1_lambda_10.0.t7')
 classifier.load_state_dict(checkpoint['net'])
 # classifier = nn.Sequential(norm, classifier).cuda().eval()
 
