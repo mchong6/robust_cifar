@@ -15,7 +15,6 @@ import math
 import argparse
 
 from models import *
-from wideresnet import WideResNet
 from utils import progress_bar
 from advertorch.attacks import LinfPGDAttack
 from advertorch.utils import NormalizeByChannelMeanStd
@@ -26,18 +25,64 @@ from advertorch.context import ctx_noparamgrad_and_eval
 parser = argparse.ArgumentParser(description='PyTorch CIFAR10 Training')
 parser.add_argument('--lr', default=0.1, type=float, help='learning rate')
 parser.add_argument('--k', default=10, type=int, help='learning rate')
-parser.add_argument('--lambda_grad', default=1, type=float, help='learning rate')
+parser.add_argument('--alpha', default=1, type=float, help='learning rate')
 parser.add_argument('--model', default='batch', help='learning rate')
 parser.add_argument('--iter_eps', default=2/255, type=float, help='learning rate')
 parser.add_argument('--gpu', default=0, type=int, help='gpu')
 parser.add_argument('--max_eps', default=8/255, type=float, help='learning rate')
 parser.add_argument('--resume', '-r', action='store_true', help='resume from checkpoint')
-parser.add_argument('--warm', '-w', action='store_true', help='resume from checkpoint')
 parser.add_argument('--test', '-t', action='store_true', help='resume from checkpoint')
-parser.add_argument('--adv', '-a', action='store_true', help='do adversarial training')
-parser.add_argument('--grad', '-g', action='store_true', help='do adversarial training')
+parser.add_argument('--train_both', '-b', action='store_true', help='do adversarial training')
 args = parser.parse_args()
 print(args)
+import torch
+import torch.nn as nn
+
+def get_lr(optimizer):
+    for param_group in optimizer.param_groups:
+        return param_group['lr']
+
+class CenterLoss(nn.Module):
+    """Center loss.
+    
+    Reference:
+    Wen et al. A Discriminative Feature Learning Approach for Deep Face Recognition. ECCV 2016.
+    
+    Args:
+        num_classes (int): number of classes.
+        feat_dim (int): feature dimension.
+    """
+    def __init__(self, num_classes=10, feat_dim=2, use_gpu=True):
+        super(CenterLoss, self).__init__()
+        self.num_classes = num_classes
+        self.feat_dim = feat_dim
+        self.use_gpu = use_gpu
+
+        if self.use_gpu:
+            self.centers = nn.Parameter(torch.randn(self.num_classes, self.feat_dim).cuda())
+        else:
+            self.centers = nn.Parameter(torch.randn(self.num_classes, self.feat_dim))
+
+    def forward(self, x, labels):
+        """
+        Args:
+            x: feature matrix with shape (batch_size, feat_dim).
+            labels: ground truth labels with shape (batch_size).
+        """
+        batch_size = x.size(0)
+        distmat = torch.pow(x, 2).sum(dim=1, keepdim=True).expand(batch_size, self.num_classes) + \
+                  torch.pow(self.centers, 2).sum(dim=1, keepdim=True).expand(self.num_classes, batch_size).t()
+        distmat.addmm_(1, -2, x, self.centers.t())
+
+        classes = torch.arange(self.num_classes).long()
+        if self.use_gpu: classes = classes.cuda()
+        labels = labels.unsqueeze(1).expand(batch_size, self.num_classes)
+        mask = labels.eq(classes.expand(batch_size, self.num_classes))
+
+        dist = distmat * mask.float()
+        loss = dist.clamp(min=1e-12, max=1e+12).sum() / batch_size
+
+        return loss
 
 # os.environ["CUDA_VISIBLE_DEVICES"]=str(args.gpu)
 
@@ -74,12 +119,8 @@ STD = torch.Tensor([0.2023, 0.1994, 0.2010])
 norm = NormalizeByChannelMeanStd(mean=MEAN, std=STD)
 
 print('==> Building model..')
-if args.model =='batch':
-    net = torch.nn.DataParallel(nn.Sequential(norm, ResNet18()).cuda())
-elif args.model =='group':
-    net = torch.nn.DataParallel(nn.Sequential(norm, ResNet18_bn()).cuda())
-elif args.model =='wide':
-    net = torch.nn.DataParallel(nn.Sequential(norm, WideResNet()).cuda())
+net = torch.nn.DataParallel(nn.Sequential(norm, ResNet18_feat()).cuda())
+center_mod = CenterLoss(num_classes=10, feat_dim=512, use_gpu=True)
 
 cudnn.benchmark = True
 
@@ -94,94 +135,74 @@ if args.resume or args.test:
 
 
 criterion = nn.CrossEntropyLoss()
-optimizer = optim.SGD(net.parameters(), lr=args.lr, momentum=0.9, weight_decay=5e-4)
-# optimizer = optim.Adam(net.parameters(), lr=0.01)
+criterion_kl = nn.KLDivLoss(size_average=False)
+optimizer = optim.SGD(list(net.parameters()) + list(center_mod.parameters()), lr=args.lr, momentum=0.9, weight_decay=5e-4)
 
-adversary = LinfPGDAttack(
-    net, eps=8/255, eps_iter=2/255, nb_iter=7,
-    rand_init=True, targeted=False)
+def BIM(image, classifier, center_mod, target, eps, itr_eps=2 / 255, itr=10):
+    origin = image.clone()
+    
+    centers = center_mod.centers[target]
+    for _ in range(itr):
+        image.requires_grad = True
+        out_image = image
+        with torch.enable_grad():
+            feat, output = classifier(out_image)
+            center_loss = F.mse_loss(feat[-1], centers)
+            
+        grad = torch.autograd.grad(center_loss, [image])[0]
+        image = image.detach() + itr_eps * torch.sign(grad.detach())
+        image = torch.min(torch.max(image, origin - eps), origin + eps)
+        image = image.clamp(0, 1).detach()
 
-def adjust_learning_rate(optimizer, epoch):
-    """decrease the learning rate"""
-    lr = args.lr
-    if epoch >= 75:
-        lr = args.lr * 0.1
-    if epoch >= 90:
-        lr = args.lr * 0.01
-    if epoch >= 100:
-        lr = args.lr * 0.001
-    for param_group in optimizer.param_groups:
-        param_group['lr'] = lr
-
-def cw(output, targets):
-    y_onehot = torch.FloatTensor(targets.size(0), 10).cuda().zero_()
-    y_onehot.scatter_(1, targets.unsqueeze(1), 1)
-    real = (y_onehot * output).sum(dim=1)
-
-    other = ((1.0 - y_onehot) * output - (y_onehot * 10000.0)
-             ).max(1)[0]
-    # - (y_onehot * TARGET_MULT) is for the true label not to be selected
-
-    loss = (real-other + 20).clamp(min=0.)
-    return loss.sum()
-
-def calc_grad(inputs, targets, classifier):
-    inputs.requires_grad_()
-    output = classifier(inputs)
-    loss = criterion(output, targets)
-        
-    if args.grad:
-#         gradients = torch.autograd.grad(loss, [inputs], create_graph=True)[0]
-        gradients = torch.autograd.grad(outputs=loss, inputs=inputs,
-                      grad_outputs=torch.ones(loss.size()).cuda(),
-                      create_graph=True, retain_graph=True)[0]
-
-        # Gradients have shape (batch_size, num_channels, img_width, img_height),
-        # so flatten to easily take norm per example in batch
-        gradients = gradients.view(inputs.size(0), -1)
-
-        # Derivatives of the gradient close to 0 can cause problems because of
-        # the square root, so manually calculate norm and add epsilon
-        gradients_norm = torch.sqrt(torch.sum(gradients ** 2, dim=1) + 1e-12).mean()
-    else:
-        gradients_norm = torch.zeros_like(loss).cuda()
-
-    return loss, args.lambda_grad*gradients_norm, output
+    return image.detach()
 
 # Training
 def train(epoch):
     print('\nEpoch: %d' % epoch)
     net.train()
-    total_train_loss = 0
-    total_grad_loss = 0
+    train_loss = 0
+    center_loss = 0
     correct = 0
     total = 0
     for batch_idx, (inputs, targets) in enumerate(trainloader):
         inputs, targets = inputs.to(device), targets.to(device)
-#         inputs += torch.zeros_like(inputs).uniform_(-8/255, 8/255)
+        bs = inputs.size(0)
         
-        if args.adv:
-            with ctx_noparamgrad_and_eval(net):
-                train_im = adversary.perturb(inputs, targets).detach()
+        net.eval()
+        adv_im = BIM(inputs, net, center_mod, targets, 8/255, itr_eps=2 / 255, itr=7).detach()
+        net.train()
+            
+        if args.train_both:
+            all_im = torch.cat([inputs, adv_im], 0)
+            targets = torch.cat([targets,targets], 0)
         else:
-            train_im = inputs
-
-        loss, grad_loss, outputs = calc_grad(train_im, targets, net)
-        optimizer.zero_grad()
-        (loss+grad_loss).backward()
-        optimizer.step()
+            all_im = adv_im
+           
+        feat, outputs = net(all_im)
+        center_loss = args.alpha*center_mod(feat[-1], targets) 
+        xe_loss = criterion(outputs, targets)
+        loss = center_loss + xe_loss
         
-#         writer.add_scalar("loss", loss.item(), len(trainloader)*epoch+batch_idx)
-#         writer.add_scalar("grad loss", grad_loss.item(), len(trainloader)*epoch+batch_idx)
+        optimizer.zero_grad()
+        loss.backward()
+        
+        for param in center_mod.parameters():
+            # lr_cent is learning rate for center loss, e.g. lr_cent = 0.5
+            param.grad.data *= (0.5 / (args.alpha * get_lr(optimizer)))
+        optimizer.step()
 
-        total_train_loss += loss.item()
-        total_grad_loss += grad_loss.item()
+        train_loss += xe_loss.item()
+        center_loss += center_loss.item()
+        if args.train_both:
+            outputs = outputs[bs:]
+            targets = targets[bs:]
+            
         _, predicted = outputs.max(1)
         total += targets.size(0)
         correct += predicted.eq(targets).sum().item()
 
         progress_bar(batch_idx, len(trainloader), 'Loss: %.3f | Grad Loss: %.6f | Acc: %.3f%% (%d/%d)'
-            % (total_train_loss/(batch_idx+1), total_grad_loss/(batch_idx+1), 100.*correct/total, correct, total))
+            % (train_loss/(batch_idx+1), center_loss/(batch_idx+1), 100.*correct/total, correct, total))
 
 def test(epoch):
     global best_acc
@@ -192,7 +213,7 @@ def test(epoch):
     with torch.no_grad():
         for batch_idx, (inputs, targets) in enumerate(testloader):
             inputs, targets = inputs.to(device), targets.to(device)
-            outputs = net(inputs)
+            _, outputs = net(inputs)
             loss = criterion(outputs, targets)
 
             test_loss += loss.item()
@@ -215,16 +236,20 @@ def test(epoch):
         }
         if not os.path.isdir('checkpoint'):
             os.mkdir('checkpoint')
-        torch.save(state, './checkpoint/%s_adv%d_grad%d_lambda_%.1f.t7'%(args.model, args.adv, args.grad, args.lambda_grad))
+#         torch.save(state, './checkpoint/madry+grad_lambda%f.t7'%args.lambda_grad)
+#         torch.save(state, './checkpoint/ckpt_grad_%.3f.t7'%args.lambda_grad)
+        torch.save(state, './checkpoint/both_center_lambda%.1f.t7'%args.alpha)
         best_acc = acc
 
 
 if args.test:
     test(0)
 else:
-    max_epoch = 100
+    max_epoch = 200
     for epoch in range(start_epoch, max_epoch):
-        adjust_learning_rate(optimizer, epoch)
-        train(epoch)
-        test(epoch)
+       if epoch in (100, 150):
+           for g in optimizer.param_groups:
+               g["lr"]/=10
+       train(epoch)
+       test(epoch)
 #     writer.close()
