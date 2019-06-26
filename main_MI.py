@@ -26,7 +26,7 @@ from advertorch.context import ctx_noparamgrad_and_eval
 parser = argparse.ArgumentParser(description='PyTorch CIFAR10 Training')
 parser.add_argument('--lr', default=0.1, type=float, help='learning rate')
 parser.add_argument('--k', default=10, type=int, help='learning rate')
-parser.add_argument('--lambda_grad', default=1, type=float, help='learning rate')
+parser.add_argument('--lambda_MI', default=1, type=float, help='learning rate')
 parser.add_argument('--model', default='batch', help='learning rate')
 parser.add_argument('--iter_eps', default=2/255, type=float, help='learning rate')
 parser.add_argument('--gpu', default=0, type=int, help='gpu')
@@ -34,8 +34,7 @@ parser.add_argument('--max_eps', default=8/255, type=float, help='learning rate'
 parser.add_argument('--resume', '-r', action='store_true', help='resume from checkpoint')
 parser.add_argument('--warm', '-w', action='store_true', help='resume from checkpoint')
 parser.add_argument('--test', '-t', action='store_true', help='resume from checkpoint')
-parser.add_argument('--adv', '-a', action='store_true', help='do adversarial training')
-parser.add_argument('--grad', '-g', action='store_true', help='do adversarial training')
+parser.add_argument('--switch', '-s', action='store_true', help='do adversarial training')
 args = parser.parse_args()
 print(args)
 
@@ -68,6 +67,35 @@ classes = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship'
 os.makedirs('logs', exist_ok=True)
 # writer = SummaryWriter("logs/test2")
 
+class Mine(nn.Module):
+    def __init__(self, input_size, hidden_size=256):
+        super().__init__()
+        self.fc1 = nn.Sequential(
+            nn.Linear(input_size, hidden_size),
+            nn.ReLU(True),
+            nn.Linear(hidden_size, hidden_size),
+            nn.ReLU(True),
+            nn.Linear(hidden_size, hidden_size),
+            nn.ReLU(True),
+            nn.Linear(hidden_size, 1)
+            )
+        
+    def forward(self, input):
+#         print(input.min(), input.max())
+        input = input.clamp(max=1e2)
+        return self.fc1(input)
+
+def mutual_information(joint, marginal, mine_net, ma_et=1., ma_rate=0.1):
+    t = mine_net(joint)
+    et = torch.exp(mine_net(marginal))
+    mi_lb = torch.mean(t) - torch.log(torch.mean(et).clamp(min=1e-8))
+    ma_et = (1-ma_rate)*ma_et + ma_rate*torch.mean(et)
+    
+    # unbiasing use moving average
+    loss = -(torch.mean(t) - (1/(ma_et.mean()+1e-8)).detach()*torch.mean(et))
+#     loss = -mi_lb
+    return loss, ma_et
+
 # Model
 MEAN = torch.Tensor([0.4914, 0.4822, 0.4465])
 STD = torch.Tensor([0.2023, 0.1994, 0.2010])
@@ -75,113 +103,131 @@ norm = NormalizeByChannelMeanStd(mean=MEAN, std=STD)
 
 print('==> Building model..')
 if args.model =='batch':
-    net = torch.nn.DataParallel(nn.Sequential(norm, ResNet18()).cuda())
+    net = torch.nn.DataParallel(nn.Sequential(norm, ResNet18_feat()).cuda())
 elif args.model =='group':
     net = torch.nn.DataParallel(nn.Sequential(norm, ResNet18_bn()).cuda())
 elif args.model =='wide':
     net = torch.nn.DataParallel(nn.Sequential(norm, WideResNet()).cuda())
 
+mine_net = torch.nn.DataParallel(Mine(1024)).cuda()
+
 cudnn.benchmark = True
+ma_et=1
 
 if args.resume or args.test:
     # Load checkpoint.
     print('==> Resuming from checkpoint..')
     assert os.path.isdir('checkpoint'), 'Error: no checkpoint directory found!'
-    checkpoint = torch.load('./checkpoint/%s_adv%d_grad%d_lambda_%.1f.t7'%(args.model, args.adv, args.grad, args.lambda_grad))
+    checkpoint = torch.load('./checkpoint/batch_MI_s_1_lambda_0.1.t7')
     net.load_state_dict(checkpoint['net'])
+    mine_net.load_state_dict(checkpoint['mine'])
 #     best_acc = checkpoint['acc']
     start_epoch = checkpoint['epoch']
 
 
 criterion = nn.CrossEntropyLoss()
-optimizer = optim.SGD(net.parameters(), lr=args.lr, momentum=0.9, weight_decay=5e-4)
-# optimizer = optim.Adam(net.parameters(), lr=0.01)
+# optimizer = optim.SGD(net.parameters(), lr=args.lr, momentum=0.9, weight_decay=5e-4)
+optimizer = optim.Adam(net.parameters(), lr=args.lr)
+mine_optimizer = optim.Adam(mine_net.parameters(), lr=0.01)
 
 adversary = LinfPGDAttack(
     net, eps=8/255, eps_iter=2/255, nb_iter=7,
     rand_init=True, targeted=False)
 
+
 def adjust_learning_rate(optimizer, epoch):
     """decrease the learning rate"""
     lr = args.lr
-    if epoch >= 100:
+    if epoch >= 75:
         lr = args.lr * 0.1
-    if epoch >= 150:
+    if epoch >= 90:
         lr = args.lr * 0.01
-#     if epoch >= 100:
-#         lr = args.lr * 0.001
+    if epoch >= 100:
+        lr = args.lr * 0.001
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
-def cw(output, targets):
-    y_onehot = torch.FloatTensor(targets.size(0), 10).cuda().zero_()
-    y_onehot.scatter_(1, targets.unsqueeze(1), 1)
-    real = (y_onehot * output).sum(dim=1)
+def calc_grad(model,
+                mine,
+                x_natural,
+                y,
+                ma_et,
+                optimizer,
+                step_size=2/255,
+                epsilon=8/255,
+                perturb_steps=7):
+    # define KL-loss
+    model.eval()
+    batch_size = len(x_natural)
+    # generate adversarial example
+    x_adv = x_natural.detach() + 0.001 * torch.randn(x_natural.shape).cuda().detach()
+    with torch.no_grad():
+        feat_natural, logits_natural = model(x_natural)
+    for _ in range(perturb_steps):
+        x_adv.requires_grad_()
+        with torch.enable_grad():
+            feat_adv, logits_adv = model(x_adv)
+            if args.switch:
+                loss = F.cross_entropy(logits_adv, y)
+            else:
+                joint = torch.cat([feat_natural, feat_adv], 1)
+                perm = torch.randperm(x_adv.size(0))
+                marginal = torch.cat([feat_natural, feat_adv[perm]], 1)
+                loss, ma_et = mutual_information(joint, marginal, mine, ma_et)
+            
+        grad = torch.autograd.grad(loss, [x_adv])[0]
+        x_adv = x_adv + step_size * torch.sign(grad.detach())
+        x_adv = torch.min(torch.max(x_adv, x_natural - epsilon), x_natural + epsilon)
+        x_adv = torch.clamp(x_adv, 0.0, 1.0).detach()
+    model.train()
 
-    other = ((1.0 - y_onehot) * output - (y_onehot * 10000.0)
-             ).max(1)[0]
-    # - (y_onehot * TARGET_MULT) is for the true label not to be selected
-
-    loss = (real-other + 20).clamp(min=0.)
-    return loss.sum()
-
-def calc_grad(inputs, targets, classifier):
-    inputs.requires_grad_()
-    output = classifier(inputs)
-    loss = criterion(output, targets)
-        
-    if args.grad:
-#         gradients = torch.autograd.grad(loss, [inputs], create_graph=True)[0]
-        gradients = torch.autograd.grad(outputs=loss, inputs=inputs,
-                      grad_outputs=torch.ones(loss.size()).cuda(),
-                      create_graph=True, retain_graph=True)[0]
-
-        # Gradients have shape (batch_size, num_channels, img_width, img_height),
-        # so flatten to easily take norm per example in batch
-        gradients = gradients.view(inputs.size(0), -1)
-
-        # Derivatives of the gradient close to 0 can cause problems because of
-        # the square root, so manually calculate norm and add epsilon
-        gradients_norm = torch.sqrt(torch.sum(gradients ** 2, dim=1) + 1e-12).mean()
-    else:
-        gradients_norm = torch.zeros_like(loss).cuda()
-
-    return loss, args.lambda_grad*gradients_norm, output
+    # zero gradient
+    optimizer.zero_grad()
+    # calculate robust loss
+    feat_natural, logits_natural = model(x_natural)
+    feat_adv, logits_adv = model(x_adv)
+    loss_natural = F.cross_entropy(logits_natural, y)
+    
+    joint = torch.cat([feat_natural, feat_adv], 1)
+    marginal = torch.cat([feat_natural, feat_adv[torch.randperm(feat_adv.size(0))]], 1)
+    MI_loss, ma_et = mutual_information(joint, marginal, mine, ma_et)
+    
+    loss = loss_natural 
+    MI_loss = args.lambda_MI * MI_loss 
+    return loss, MI_loss, logits_adv
 
 # Training
 def train(epoch):
     print('\nEpoch: %d' % epoch)
     net.train()
     total_train_loss = 0
-    total_grad_loss = 0
+    total_robust_loss = 0
     correct = 0
     total = 0
     for batch_idx, (inputs, targets) in enumerate(trainloader):
         inputs, targets = inputs.to(device), targets.to(device)
 #         inputs += torch.zeros_like(inputs).uniform_(-8/255, 8/255)
         
-        if args.adv:
-            with ctx_noparamgrad_and_eval(net):
-                train_im = adversary.perturb(inputs, targets).detach()
-        else:
-            train_im = inputs
-
-        loss, grad_loss, outputs = calc_grad(train_im, targets, net)
+        loss, robust_loss, outputs = calc_grad(net, mine_net, inputs, targets, ma_et, optimizer)
+        total_loss = loss + robust_loss
         optimizer.zero_grad()
-        (loss+grad_loss).backward()
+        mine_optimizer.zero_grad()
+        total_loss.backward()
         optimizer.step()
+        mine_optimizer.step()
         
 #         writer.add_scalar("loss", loss.item(), len(trainloader)*epoch+batch_idx)
 #         writer.add_scalar("grad loss", grad_loss.item(), len(trainloader)*epoch+batch_idx)
 
         total_train_loss += loss.item()
-        total_grad_loss += grad_loss.item()
+        total_robust_loss += robust_loss.item()
+        
         _, predicted = outputs.max(1)
         total += targets.size(0)
         correct += predicted.eq(targets).sum().item()
 
-        progress_bar(batch_idx, len(trainloader), 'Loss: %.3f | Grad Loss: %.6f | Acc: %.3f%% (%d/%d)'
-            % (total_train_loss/(batch_idx+1), total_grad_loss/(batch_idx+1), 100.*correct/total, correct, total))
+        progress_bar(batch_idx, len(trainloader), 'Loss: %.3f | Robust Loss: %.3f | Acc: %.3f%% (%d/%d)'
+            % (total_train_loss/(batch_idx+1), total_robust_loss/(batch_idx+1),100.*correct/total, correct, total))
 
 def test(epoch):
     global best_acc
@@ -192,7 +238,7 @@ def test(epoch):
     with torch.no_grad():
         for batch_idx, (inputs, targets) in enumerate(testloader):
             inputs, targets = inputs.to(device), targets.to(device)
-            outputs = net(inputs)
+            _, outputs = net(inputs)
             loss = criterion(outputs, targets)
 
             test_loss += loss.item()
@@ -210,19 +256,20 @@ def test(epoch):
         print('Saving..')
         state = {
             'net': net.state_dict(),
+            'mine': mine_net.state_dict(),
             'acc': acc,
             'epoch': epoch,
         }
         if not os.path.isdir('checkpoint'):
             os.mkdir('checkpoint')
-        torch.save(state, './checkpoint/%s_adv%d_grad%d_lambda_%.1f.t7'%(args.model, args.adv, args.grad, args.lambda_grad))
+        torch.save(state, './checkpoint/%s_MI_s%d_lambda_%.1f.t7'%(args.model, args.switch, args.lambda_MI))
         best_acc = acc
 
 
 if args.test:
     test(0)
 else:
-    max_epoch = 200
+    max_epoch = 100
     for epoch in range(start_epoch, max_epoch):
         adjust_learning_rate(optimizer, epoch)
         train(epoch)
