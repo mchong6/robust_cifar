@@ -9,10 +9,10 @@ import torch.nn as nn
 import torch.backends.cudnn as cudnn
 import torch.optim as optim
 import torch.nn.functional as F
-from torchvision.utils import save_image
 import torchvision
 import torch.utils.data as Data
 import torchvision.transforms as transforms
+from wideresnet import WideResNet
 
 from models import *
 import matplotlib.pyplot as plt
@@ -55,7 +55,8 @@ testloader = torch.utils.data.DataLoader(testset, batch_size=100, shuffle=False,
 norm = NormalizeByChannelMeanStd(
     mean=MEAN, std=STD).cuda()
 
-classifier = torch.nn.DataParallel(nn.Sequential(norm, ResNet18())).cuda().eval()
+#classifier = torch.nn.DataParallel(nn.Sequential(norm, ResNet18())).cuda().eval()
+classifier = torch.nn.DataParallel(nn.Sequential(norm, WideResNet())).cuda().eval()
 # classifier = nn.DataParallel(ResNet18())
 # checkpoint = torch.load('./checkpoint/madry_baseline.t7')
 # checkpoint = torch.load('./checkpoint/madry+grad_lambda1.t7')
@@ -63,12 +64,11 @@ classifier = torch.nn.DataParallel(nn.Sequential(norm, ResNet18())).cuda().eval(
 # checkpoint = torch.load('./checkpoint/madry+grad_lambda10.000000.t7')
 # checkpoint = torch.load('./checkpoint/ckpt_robust_data_robust_mod.t7')
 #checkpoint = torch.load('./checkpoint/ckpt_adv1_lambda_100.000.t7')
-checkpoint = torch.load('./checkpoint/ckpt_adv0_grad1_cw0_lambda_200.0.t7')
-#checkpoint = torch.load('./checkpoint/ckpt_adv1_grad1_lambda_10.0.t7')
+#checkpoint = torch.load('./checkpoint/trades_wide_grad1_lambda_10.0.t7')
+checkpoint = torch.load('../jason/robust_cifar/checkpoint/wide_MI_s1_lambda_0.1.t7')
 classifier.load_state_dict(checkpoint['net'])
-# classifier = nn.Sequential(norm, classifier).cuda().eval()
-
-classifier_norm = nn.Sequential(norm, ResNet18()).cuda().eval()
+# classifier = nn.Sequential(norm, classifier).cuda().eval() 
+#classifier_norm = nn.Sequential(norm, ResNet18()).cuda().eval()
 # checkpoint = torch.load('./checkpoint/ckpt_accumulate_10_scale1_warm1.t7')
 # checkpoint = torch.load('./checkpoint/ckpt_robust.t7')
 # checkpoint = torch.load('./checkpoint/ckpt_sub_accumulate_1_scale0_warm0.t7')
@@ -78,6 +78,10 @@ classifier_norm = nn.Sequential(norm, ResNet18()).cuda().eval()
 criterion = nn.CrossEntropyLoss()
 
 
+adversary = LinfPGDAttack(
+    classifier, eps=8/255, eps_iter=1/255, nb_iter=20,
+    rand_init=True, targeted=False)
+
 real_correct = 0
 fake_correct = 0
 total = 0
@@ -86,8 +90,8 @@ for itr, (real_im, target) in enumerate((testloader)):
     
 #     fake_im = robustify(real_im, adv_model, target, 50)
 #     fake_im = sparse_attack(real_im, target, adv_model, 8/255, 1/255, 200)
-    fake_im = BIM(real_im, classifier, target, 8/255, itr_eps=1/255, itr=20)
-#     fake_im = adversary.perturb(real_im, target)
+#    fake_im = BIM(real_im, classifier, target, 8/255, itr_eps=1/255, itr=20)
+    fake_im = adversary.perturb(real_im, target)
 #     fake_im = pgd_lbfgs(real_im, classifier, target, max_eps=8/255, itr_eps=2 / 255, itr=5)
     
     with torch.no_grad():

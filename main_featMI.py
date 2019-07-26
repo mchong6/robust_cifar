@@ -16,23 +16,10 @@ import argparse
 from models import *
 from utils import progress_bar
 
-class softCrossEntropy(nn.Module):
-    def __init__(self):
-        super(softCrossEntropy, self).__init__()
-        return
-
-    def forward(self, inputs, target):
-        """
-        :param inputs: predictions
-        :param target: target labels
-        :return: loss
-        """
-        return torch.mean(torch.sum(-target * F.log_softmax(inputs, dim=1), dim=1))
-
-
 parser = argparse.ArgumentParser(description='PyTorch CIFAR10 Training')
 parser.add_argument('--lr', default=0.1, type=float, help='learning rate')
 parser.add_argument('--resume', '-r', action='store_true', help='resume from checkpoint')
+parser.add_argument('--lambda_MI', default=1, type=float, help='learning rate')
 args = parser.parse_args()
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -60,24 +47,30 @@ testset = torchvision.datasets.CIFAR10(root='./data', train=False, download=True
 testloader = torch.utils.data.DataLoader(testset, batch_size=100, shuffle=False, num_workers=2)
 
 classes = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
+class Mine(nn.Module):
+    def __init__(self, input_size, hidden_size=128):
+        super().__init__()
+        self.fc1 = nn.Sequential(
+            nn.Linear(input_size, hidden_size),
+            nn.LeakyReLU(0.2, True),
+            nn.Linear(hidden_size, hidden_size),
+            nn.LeakyReLU(0.2, True),
+            nn.Linear(hidden_size, hidden_size),
+            nn.LeakyReLU(0.2, True),
+            nn.Linear(hidden_size, 1)
+            )
+
+    def forward(self, input):
+        return self.fc1(input)
+
 
 # Model
 print('==> Building model..')
-# net = VGG('VGG19')
 net = ResNet18()
-# net = PreActResNet18()
-# net = GoogLeNet()
-# net = DenseNet121()
-# net = ResNeXt29_2x64d()
-# net = MobileNet()
-# net = MobileNetV2()
-# net = DPN92()
-# net = ShuffleNetG2()
-# net = SENet18()
-# net = ShuffleNetV2(1)
 net = net.to(device)
 if device == 'cuda':
     net = torch.nn.DataParallel(net)
+    mine_net = torch.nn.DataParallel(Mine(10))
     cudnn.benchmark = True
     print('true')
 
@@ -91,45 +84,62 @@ if args.resume:
     start_epoch = checkpoint['epoch']
 
 criterion = nn.CrossEntropyLoss()
-# criterion = softCrossEntropy()
 optimizer = optim.SGD(net.parameters(), lr=args.lr, momentum=0.9, weight_decay=5e-4)
+mine_optimizer = optim.Adam(mine_net.parameters(), lr=1e-3)
 
-def mixup_data(x, y, alpha=0.5):
-    '''Returns mixed inputs, pairs of targets, and lambda'''
-    batch_size = x.size()[0]
-    index = torch.randperm(batch_size).cuda()
-    
-    y_onehot = torch.FloatTensor(x.size(0), 10).cuda()
-    y_onehot.zero_()
-    y_onehot.scatter_(1, y.unsqueeze(1), 1)
+def swap_perm(source):
+    # [b x k]
+    output = source.clone()
+    for i in range(output.size(1)):
+        output[:, i] = output[torch.randperm(output.size(0)), i]
+    return output
 
-    mixed_x = (1-alpha) * x + (alpha) * x[index, :]
-    mixed_y = (1-alpha) * y_onehot + alpha * y_onehot[index]
-    return mixed_x, mixed_y
+def mutual_information(joint, marginal, mine_net):
+    Ej = -F.softplus(-mine_net(joint)).mean()
+    Em = F.softplus(mine_net(marginal)).mean()
+    LOCAL = (Em - Ej)
+    return LOCAL
+
+def inference(img, net, mine_net):
+    output = net(img)
+    joint = F.tanh(output)
+    marginal = swap_perm(joint)
+        
+    MI_loss = mutual_information(joint, marginal, mine_net)
+    return output, MI_loss
 
 # Training
 def train(epoch):
     print('\nEpoch: %d' % epoch)
     net.train()
-    train_loss = 0
+    total_train_loss = 0
+    total_MI_loss = 0
     correct = 0
     total = 0
     for batch_idx, (inputs, targets) in enumerate(trainloader):
         inputs, targets = inputs.to(device), targets.to(device)
-#         inputs, targets = mixup_data(inputs, targets)
+
+        _, MI_loss = inference(inputs, net, mine_net)
+        mine_optimizer.zero_grad()
+        MI_loss.backward()
+        mine_optimizer.step()
+        
+        outputs, MI_loss = inference(inputs, net, mine_net)
+        xe_loss = criterion(outputs, targets)
+        
+        net_loss = xe_loss - args.lambda_MI * MI_loss
         optimizer.zero_grad()
-        outputs = net(inputs)
-        loss = criterion(outputs, targets)
-        loss.backward()
+        net_loss.backward()
         optimizer.step()
 
-        train_loss += loss.item()
+        total_train_loss += xe_loss.item()
+        total_MI_loss += MI_loss.item()
         _, predicted = outputs.max(1)
         total += targets.size(0)
         correct += predicted.eq(targets).sum().item()
 
-        progress_bar(batch_idx, len(trainloader), 'Loss: %.3f | Acc: %.3f%% (%d/%d)'
-            % (train_loss/(batch_idx+1), 100.*correct/total, correct, total))
+        progress_bar(batch_idx, len(trainloader), 'Loss: %.3f | MI Loss: %.3f | Acc: %.3f%% (%d/%d)'
+            % (total_train_loss/(batch_idx+1), total_MI_loss/(batch_idx+1),100.*correct/total, correct, total))
 
 def test(epoch):
     global best_acc
@@ -162,7 +172,7 @@ def test(epoch):
         }
         if not os.path.isdir('checkpoint'):
             os.mkdir('checkpoint')
-        torch.save(state, './checkpoint/ckpt.t7')
+        torch.save(state, './checkpoint/ckpt_featMI.t7')
         best_acc = acc
 
 

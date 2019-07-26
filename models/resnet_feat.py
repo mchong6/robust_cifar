@@ -94,7 +94,8 @@ class ResNet_feat(nn.Module):
         feat5 = F.avg_pool2d(feat4, 4)
         feat5 = feat5.view(feat5.size(0), -1)
         out = self.linear(feat5)
-        return [feat1, feat2, feat3, feat4, feat5], out
+        #return [feat1, feat2, feat3, feat4, feat5], out
+        return feat5, out
 
 
 def ResNet18_feat():
