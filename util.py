@@ -21,8 +21,8 @@ import logging
 import shutil
 from tqdm import tqdm_notebook
 
-import dominate
-from dominate.tags import meta, h3, table, tr, td, p, a, img, br, div
+# import dominate
+# from dominate.tags import meta, h3, table, tr, td, p, a, img, br, div
 
 
 def random_noise(im, type='uniform',p=0.5, eps=4 / 255, smooth=False, sigma=1):

@@ -9,10 +9,10 @@ import torch.nn as nn
 import torch.backends.cudnn as cudnn
 import torch.optim as optim
 import torch.nn.functional as F
-from torchvision.utils import save_image
 import torchvision
 import torch.utils.data as Data
 import torchvision.transforms as transforms
+from wideresnet import WideResNet
 
 from models import *
 import matplotlib.pyplot as plt
@@ -55,7 +55,8 @@ testloader = torch.utils.data.DataLoader(testset, batch_size=100, shuffle=False,
 norm = NormalizeByChannelMeanStd(
     mean=MEAN, std=STD).cuda()
 
-classifier = torch.nn.DataParallel(nn.Sequential(norm, ResNet18())).cuda().eval()
+#classifier = torch.nn.DataParallel(nn.Sequential(norm, ResNet18())).cuda().eval()
+classifier = torch.nn.DataParallel(nn.Sequential(norm, WideResNet())).cuda().eval()
 # classifier = nn.DataParallel(ResNet18())
 # checkpoint = torch.load('./checkpoint/madry_baseline.t7')
 # checkpoint = torch.load('./checkpoint/madry+grad_lambda1.t7')
@@ -63,11 +64,10 @@ classifier = torch.nn.DataParallel(nn.Sequential(norm, ResNet18())).cuda().eval(
 # checkpoint = torch.load('./checkpoint/madry+grad_lambda10.000000.t7')
 # checkpoint = torch.load('./checkpoint/ckpt_robust_data_robust_mod.t7')
 #checkpoint = torch.load('./checkpoint/ckpt_adv1_lambda_100.000.t7')
-checkpoint = torch.load('./checkpoint/ckpt_adv0_grad1_cw0_lambda_200.0.t7')
-#checkpoint = torch.load('./checkpoint/ckpt_adv1_grad1_lambda_10.0.t7')
+#checkpoint = torch.load('./checkpoint/trades_wide_grad1_lambda_10.0.t7')
+checkpoint = torch.load('./checkpoint/wide_MI_s0_lambda_1.0.t7')
 classifier.load_state_dict(checkpoint['net'])
-# classifier = nn.Sequential(norm, classifier).cuda().eval()
-
+# classifier = nn.Sequential(norm, classifier).cuda().eval() 
 classifier_norm = nn.Sequential(norm, ResNet18()).cuda().eval()
 # checkpoint = torch.load('./checkpoint/ckpt_accumulate_10_scale1_warm1.t7')
 # checkpoint = torch.load('./checkpoint/ckpt_robust.t7')

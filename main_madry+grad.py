@@ -27,7 +27,7 @@ parser = argparse.ArgumentParser(description='PyTorch CIFAR10 Training')
 parser.add_argument('--lr', default=0.1, type=float, help='learning rate')
 parser.add_argument('--k', default=10, type=int, help='learning rate')
 parser.add_argument('--lambda_grad', default=1, type=float, help='learning rate')
-parser.add_argument('--model', default='batch', help='learning rate')
+parser.add_argument('--model', default='wide', help='learning rate')
 parser.add_argument('--iter_eps', default=2/255, type=float, help='learning rate')
 parser.add_argument('--gpu', default=0, type=int, help='gpu')
 parser.add_argument('--max_eps', default=8/255, type=float, help='learning rate')
@@ -104,12 +104,12 @@ adversary = LinfPGDAttack(
 def adjust_learning_rate(optimizer, epoch):
     """decrease the learning rate"""
     lr = args.lr
-    if epoch >= 75:
-        lr = args.lr * 0.1
-    if epoch >= 90:
-        lr = args.lr * 0.01
     if epoch >= 100:
-        lr = args.lr * 0.001
+        lr = args.lr * 0.1
+    if epoch >= 150:
+        lr = args.lr * 0.01
+    #if epoch >= 100:
+    #    lr = args.lr * 0.001
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
@@ -222,7 +222,7 @@ def test(epoch):
 if args.test:
     test(0)
 else:
-    max_epoch = 100
+    max_epoch = 200
     for epoch in range(start_epoch, max_epoch):
         adjust_learning_rate(optimizer, epoch)
         train(epoch)
