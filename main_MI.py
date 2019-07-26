@@ -99,7 +99,6 @@ def mutual_information(joint, marginal, mine_net, ma_et=1., ma_rate=0.1):
     LOCAL = (Em - Ej)
     return LOCAL, 0
 
-
 # Model
 MEAN = torch.Tensor([0.4914, 0.4822, 0.4465])
 STD = torch.Tensor([0.2023, 0.1994, 0.2010])
@@ -111,9 +110,15 @@ if args.model =='batch':
 elif args.model =='group':
     net = torch.nn.DataParallel(nn.Sequential(norm, ResNet18_bn()).cuda())
 elif args.model =='wide':
+<<<<<<< HEAD
     net = torch.nn.DataParallel(nn.Sequential(norm, WideResNet_feat()).cuda())
 
 mine_net = torch.nn.DataParallel(Mine(1280)).cuda()
+=======
+    net = torch.nn.DataParallel(nn.Sequential(norm, WideResNet()).cuda())
+
+mine_net = torch.nn.DataParallel(Mine(1024)).cuda()
+>>>>>>> 90ca75f8b20240c8f9da0d78a425fbf73ddb31ae
 
 cudnn.benchmark = True
 ma_et=1
@@ -122,7 +127,11 @@ if args.resume or args.test:
     # Load checkpoint.
     print('==> Resuming from checkpoint..')
     assert os.path.isdir('checkpoint'), 'Error: no checkpoint directory found!'
+<<<<<<< HEAD
     checkpoint = torch.load('./checkpoint/wide_MI_s0_lambda_1.0.t7')
+=======
+    checkpoint = torch.load('./checkpoint/batch_MI_s_1_lambda_0.1.t7')
+>>>>>>> 90ca75f8b20240c8f9da0d78a425fbf73ddb31ae
     net.load_state_dict(checkpoint['net'])
     mine_net.load_state_dict(checkpoint['mine'])
 #     best_acc = checkpoint['acc']
@@ -142,6 +151,7 @@ adversary = LinfPGDAttack(
 def adjust_learning_rate(optimizer, epoch):
     """decrease the learning rate"""
     lr = args.lr
+<<<<<<< HEAD
     if epoch >= 100:
         lr = args.lr * 0.1
     if epoch >= 150:
@@ -165,6 +175,17 @@ def BIM(image, classifier, target, eps, itr_eps=2 / 255, itr=7):
     classifier.train()
     return image.detach()
 
+=======
+    if epoch >= 75:
+        lr = args.lr * 0.1
+    if epoch >= 90:
+        lr = args.lr * 0.01
+    if epoch >= 100:
+        lr = args.lr * 0.001
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
+
+>>>>>>> 90ca75f8b20240c8f9da0d78a425fbf73ddb31ae
 def calc_grad(model,
                 mine,
                 x_natural,
@@ -206,6 +227,12 @@ def calc_grad(model,
     feat_adv, logits_adv = model(x_adv)
     loss_natural = F.cross_entropy(logits_natural, y)
     
+<<<<<<< HEAD
+=======
+    joint = torch.cat([feat_natural, feat_adv], 1)
+    marginal = torch.cat([feat_natural, feat_adv[torch.randperm(feat_adv.size(0))]], 1)
+    MI_loss, ma_et = mutual_information(joint, marginal, mine, ma_et)
+>>>>>>> 90ca75f8b20240c8f9da0d78a425fbf73ddb31ae
     
     loss = loss_natural 
     MI_loss = args.lambda_MI * MI_loss 
@@ -215,13 +242,17 @@ def calc_grad(model,
 def train(epoch):
     print('\nEpoch: %d' % epoch)
     net.train()
+<<<<<<< HEAD
     mine_net.train()
+=======
+>>>>>>> 90ca75f8b20240c8f9da0d78a425fbf73ddb31ae
     total_train_loss = 0
     total_robust_loss = 0
     correct = 0
     total = 0
     for batch_idx, (inputs, targets) in enumerate(trainloader):
         inputs, targets = inputs.to(device), targets.to(device)
+<<<<<<< HEAD
         adv_inputs = BIM(inputs, net, targets, 8/255).detach()
 
         feat_natural, output_natural = net(inputs)
@@ -235,16 +266,32 @@ def train(epoch):
         loss = criterion(torch.cat([output_natural, output_adv], 0), torch.cat([targets, targets],0))
         total_loss = loss + MI_loss
 
+=======
+#         inputs += torch.zeros_like(inputs).uniform_(-8/255, 8/255)
+        
+        loss, robust_loss, outputs = calc_grad(net, mine_net, inputs, targets, ma_et, optimizer)
+        total_loss = loss + robust_loss
+>>>>>>> 90ca75f8b20240c8f9da0d78a425fbf73ddb31ae
         optimizer.zero_grad()
         mine_optimizer.zero_grad()
         total_loss.backward()
         optimizer.step()
         mine_optimizer.step()
         
+<<<<<<< HEAD
         total_train_loss += loss.item()
         total_robust_loss += MI_loss.item()
         
         _, predicted = output_adv.max(1)
+=======
+#         writer.add_scalar("loss", loss.item(), len(trainloader)*epoch+batch_idx)
+#         writer.add_scalar("grad loss", grad_loss.item(), len(trainloader)*epoch+batch_idx)
+
+        total_train_loss += loss.item()
+        total_robust_loss += robust_loss.item()
+        
+        _, predicted = outputs.max(1)
+>>>>>>> 90ca75f8b20240c8f9da0d78a425fbf73ddb31ae
         total += targets.size(0)
         correct += predicted.eq(targets).sum().item()
 
@@ -291,7 +338,11 @@ def test(epoch):
 if args.test:
     test(0)
 else:
+<<<<<<< HEAD
     max_epoch = 200
+=======
+    max_epoch = 100
+>>>>>>> 90ca75f8b20240c8f9da0d78a425fbf73ddb31ae
     for epoch in range(start_epoch, max_epoch):
         adjust_learning_rate(optimizer, epoch)
         train(epoch)
