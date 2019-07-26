@@ -11,6 +11,10 @@ import torchvision
 import torchvision.transforms as transforms
 
 import os
+<<<<<<< HEAD
+=======
+os.environ["CUDA_VISIBLE_DEVICES"]="3"
+>>>>>>> dfc1511216ed0f8e2de3f0b48e51b37ce744a5b5
 import argparse
 
 from models import *
@@ -64,10 +68,10 @@ classes = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship'
 # Model
 print('==> Building model..')
 # net = VGG('VGG19')
-net = ResNet18()
+#net = ResNet18()
 # net = PreActResNet18()
 # net = GoogLeNet()
-# net = DenseNet121()
+net = DenseNet121()
 # net = ResNeXt29_2x64d()
 # net = MobileNet()
 # net = MobileNetV2()
@@ -162,7 +166,11 @@ def test(epoch):
         }
         if not os.path.isdir('checkpoint'):
             os.mkdir('checkpoint')
+<<<<<<< HEAD
         torch.save(state, './checkpoint/ckpt.t7')
+=======
+        torch.save(state, './checkpoint/ckpt_dense.t7')
+>>>>>>> dfc1511216ed0f8e2de3f0b48e51b37ce744a5b5
         best_acc = acc
 
 
